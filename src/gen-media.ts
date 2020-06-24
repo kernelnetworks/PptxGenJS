@@ -143,35 +143,36 @@ function createSvgPngPreview(rel: ISlideRelMedia): Promise<string> {
  * FIXME: TODO: currently unused
  * TODO: Should return a Promise
  */
-function getSizeFromImage(inImgUrl: string): { width: number; height: number } {
-	const sizeOf = typeof require !== 'undefined' ? require('sizeof') : null // NodeJS
+export function getSizeFromImage(inImgUrl: string): { width: number; height: number } {
+  const sizeOf = typeof require !== 'undefined' ? require('image-size') : null // NodeJS
 
-	if (sizeOf) {
-		try {
-			let dimensions = sizeOf(inImgUrl)
-			return { width: dimensions.width, height: dimensions.height }
-		} catch (ex) {
-			console.error('ERROR: sizeOf: Unable to load image: ' + inImgUrl)
-			return { width: 0, height: 0 }
-		}
-	} else if (Image && typeof Image === 'function') {
-		// A: Create
-		let image = new Image()
+  if (sizeOf) {
+    try {
+      let dimensions = sizeOf(inImgUrl)
+      console.log("dimensions:", dimensions)
+      return { width: dimensions.width, height: dimensions.height }
+    } catch (ex) {
+      console.error('ERROR: sizeOf: Unable to load image: ' + inImgUrl)
+      return { width: 0, height: 0 }
+    }
+  } else if (Image && typeof Image === 'function') {
+    // A: Create
+    let image = new Image()
 
-		// B: Set onload event
-		image.onload = () => {
-			// FIRST: Check for any errors: This is the best method (try/catch wont work, etc.)
-			if (image.width + image.height === 0) {
-				return { width: 0, height: 0 }
-			}
-			let obj = { width: image.width, height: image.height }
-			return obj
-		}
-		image.onerror = () => {
-			console.error(`ERROR: image.onload: Unable to load image: ${inImgUrl}`)
-		}
+    // B: Set onload event
+    image.onload = () => {
+      // FIRST: Check for any errors: This is the best method (try/catch wont work, etc.)
+      if (image.width + image.height === 0) {
+        return { width: 0, height: 0 }
+      }
+      let obj = { width: image.width, height: image.height }
+      return obj
+    }
+    image.onerror = () => {
+      console.error(`ERROR: image.onload: Unable to load image: ${inImgUrl}`)
+    }
 
-		// C: Load image
-		image.src = inImgUrl
-	}
+    // C: Load image
+    image.src = inImgUrl
+  }
 }

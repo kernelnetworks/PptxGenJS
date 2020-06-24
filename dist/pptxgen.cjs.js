@@ -1,4 +1,4 @@
-/* PptxGenJS 3.2.1 @ 2020-05-25T19:45:07.798Z */
+/* PptxGenJS 3.2.1 @ 2020-06-24T02:37:43.222Z */
 'use strict';
 
 var JSZip = require('jszip');
@@ -2910,6 +2910,176 @@ function correctShadowOptions(ShadowOptions) {
 }
 
 /**
+ * PptxGenJS: Media Methods
+ */
+/**
+ * Encode Image/Audio/Video into base64
+ * @param {ISlideLib | ISlideLayout} layout - slide layout
+ * @return {Promise} promise of generating the rels
+ */
+function encodeSlideMediaRels(layout) {
+    var fs = typeof require !== 'undefined' && typeof window === 'undefined' ? require('fs') : null; // NodeJS
+    var https = typeof require !== 'undefined' && typeof window === 'undefined' ? require('https') : null; // NodeJS
+    var imageProms = [];
+    // A: Read/Encode each audio/image/video thats not already encoded (eg: base64 provided by user)
+    layout.relsMedia
+        .filter(function (rel) { return rel.type !== 'online' && !rel.data; })
+        .forEach(function (rel) {
+        imageProms.push(new Promise(function (resolve, reject) {
+            if (fs && rel.path.indexOf('http') !== 0) {
+                // DESIGN: Node local-file encoding is syncronous, so we can load all images here, then call export with a callback (if any)
+                try {
+                    var bitmap = fs.readFileSync(rel.path);
+                    rel.data = Buffer.from(bitmap).toString('base64');
+                    resolve('done');
+                }
+                catch (ex) {
+                    rel.data = IMG_BROKEN;
+                    reject('ERROR: Unable to read media: "' + rel.path + '"\n' + ex.toString());
+                }
+            }
+            else if (fs && https && rel.path.indexOf('http') === 0) {
+                https.get(rel.path, function (res) {
+                    var rawData = '';
+                    res.setEncoding('binary'); // IMPORTANT: Only binary encoding works
+                    res.on('data', function (chunk) { return (rawData += chunk); });
+                    res.on('end', function () {
+                        rel.data = Buffer.from(rawData, 'binary').toString('base64');
+                        resolve('done');
+                    });
+                    res.on('error', function (ex) {
+                        rel.data = IMG_BROKEN;
+                        reject("ERROR! Unable to load image: " + rel.path);
+                    });
+                });
+            }
+            else {
+                // A: Declare XHR and onload/onerror handlers
+                // DESIGN: `XMLHttpRequest()` plus `FileReader()` = Ablity to read any file into base64!
+                var xhr_1 = new XMLHttpRequest();
+                xhr_1.onload = function () {
+                    var reader = new FileReader();
+                    reader.onloadend = function () {
+                        rel.data = reader.result;
+                        if (!rel.isSvgPng) {
+                            resolve('done');
+                        }
+                        else {
+                            createSvgPngPreview(rel)
+                                .then(function () {
+                                resolve('done');
+                            })
+                                .catch(function (ex) {
+                                reject(ex);
+                            });
+                        }
+                    };
+                    reader.readAsDataURL(xhr_1.response);
+                };
+                xhr_1.onerror = function (ex) {
+                    rel.data = IMG_BROKEN;
+                    reject("ERROR! Unable to load image: " + rel.path);
+                };
+                // B: Execute request
+                xhr_1.open('GET', rel.path);
+                xhr_1.responseType = 'blob';
+                xhr_1.send();
+            }
+        }));
+    });
+    // B: SVG: base64 data still requires a png to be generated (`isSvgPng` flag this as the preview image, not the SVG itself)
+    layout.relsMedia
+        .filter(function (rel) { return rel.isSvgPng && rel.data; })
+        .forEach(function (rel) {
+        if (fs) {
+            //console.log('Sorry, SVG is not supported in Node (more info: https://github.com/gitbrent/PptxGenJS/issues/401)')
+            rel.data = IMG_BROKEN;
+            imageProms.push(Promise.resolve().then(function () { return 'done'; }));
+        }
+        else {
+            imageProms.push(createSvgPngPreview(rel));
+        }
+    });
+    return imageProms;
+}
+/**
+ * Create SVG preview image
+ * @param {ISlideRelMedia} rel - slide rel
+ * @return {Promise} promise
+ */
+function createSvgPngPreview(rel) {
+    return new Promise(function (resolve, reject) {
+        // A: Create
+        var image = new Image();
+        // B: Set onload event
+        image.onload = function () {
+            // First: Check for any errors: This is the best method (try/catch wont work, etc.)
+            if (image.width + image.height === 0) {
+                image.onerror('h/w=0');
+            }
+            var canvas = document.createElement('CANVAS');
+            var ctx = canvas.getContext('2d');
+            canvas.width = image.width;
+            canvas.height = image.height;
+            ctx.drawImage(image, 0, 0);
+            // Users running on local machine will get the following error:
+            // "SecurityError: Failed to execute 'toDataURL' on 'HTMLCanvasElement': Tainted canvases may not be exported."
+            // when the canvas.toDataURL call executes below.
+            try {
+                rel.data = canvas.toDataURL(rel.type);
+                resolve('done');
+            }
+            catch (ex) {
+                image.onerror(ex);
+            }
+            canvas = null;
+        };
+        image.onerror = function (ex) {
+            rel.data = IMG_BROKEN;
+            reject("ERROR! Unable to load image: " + rel.path);
+        };
+        // C: Load image
+        image.src = typeof rel.data === 'string' ? rel.data : IMG_BROKEN;
+    });
+}
+/**
+ * FIXME: TODO: currently unused
+ * TODO: Should return a Promise
+ */
+function getSizeFromImage(inImgUrl) {
+    var sizeOf = typeof require !== 'undefined' ? require('image-size') : null; // NodeJS
+    if (sizeOf) {
+        try {
+            var dimensions = sizeOf(inImgUrl);
+            console.log("dimensions:", dimensions);
+            return { width: dimensions.width, height: dimensions.height };
+        }
+        catch (ex) {
+            console.error('ERROR: sizeOf: Unable to load image: ' + inImgUrl);
+            return { width: 0, height: 0 };
+        }
+    }
+    else if (Image && typeof Image === 'function') {
+        // A: Create
+        var image_1 = new Image();
+        // B: Set onload event
+        image_1.onload = function () {
+            // FIRST: Check for any errors: This is the best method (try/catch wont work, etc.)
+            if (image_1.width + image_1.height === 0) {
+                return { width: 0, height: 0 };
+            }
+            var obj = { width: image_1.width, height: image_1.height };
+            return obj;
+        };
+        image_1.onerror = function () {
+            console.error("ERROR: image.onload: Unable to load image: " + inImgUrl);
+        };
+        // C: Load image
+        image_1.src = inImgUrl;
+    }
+}
+
+/**
  * PptxGenJS: Slide Object Generators
  */
 /** counter for included charts (used for index in their filenames) */
@@ -2950,16 +3120,16 @@ function createSlideObject(slideDef, target) {
                 // TODO: ISSUE#599 - only text is suported now (add more below)
                 //else if (object[key].image) addImageDefinition(tgt, object[key].image)
                 /* 20200120: So... image placeholders go into the "slideLayoutN.xml" file and addImage doesnt do this yet...
-                    <p:sp>
+                  <p:sp>
                   <p:nvSpPr>
-                    <p:cNvPr id="7" name="Picture Placeholder 6">
-                      <a:extLst>
-                        <a:ext uri="{FF2B5EF4-FFF2-40B4-BE49-F238E27FC236}">
-                          <a16:creationId xmlns:a16="http://schemas.microsoft.com/office/drawing/2014/main" id="{CE1AE45D-8641-0F4F-BDB5-080E69CCB034}"/>
-                        </a:ext>
-                      </a:extLst>
-                    </p:cNvPr>
-                    <p:cNvSpPr>
+                  <p:cNvPr id="7" name="Picture Placeholder 6">
+                    <a:extLst>
+                    <a:ext uri="{FF2B5EF4-FFF2-40B4-BE49-F238E27FC236}">
+                      <a16:creationId xmlns:a16="http://schemas.microsoft.com/office/drawing/2014/main" id="{CE1AE45D-8641-0F4F-BDB5-080E69CCB034}"/>
+                    </a:ext>
+                    </a:extLst>
+                  </p:cNvPr>
+                  <p:cNvSpPr>
                 */
             }
         });
@@ -2981,18 +3151,18 @@ function createSlideObject(slideDef, target) {
  * {
  *   title: 'eSurvey chart',
  *   data: [
- *		{
- *			name: 'Income',
- *			labels: ['2005', '2006', '2007', '2008', '2009'],
- *			values: [23.5, 26.2, 30.1, 29.5, 24.6]
- *		},
- *		{
- *			name: 'Expense',
- *			labels: ['2005', '2006', '2007', '2008', '2009'],
- *			values: [18.1, 22.8, 23.9, 25.1, 25]
- *		}
- *	 ]
- *	}
+ *    {
+ *      name: 'Income',
+ *      labels: ['2005', '2006', '2007', '2008', '2009'],
+ *      values: [23.5, 26.2, 30.1, 29.5, 24.6]
+ *    },
+ *    {
+ *      name: 'Expense',
+ *      labels: ['2005', '2006', '2007', '2008', '2009'],
+ *      values: [18.1, 22.8, 23.9, 25.1, 25]
+ *    }
+ *   ]
+ *  }
  */
 function addChartDefinition(target, type, data, opt) {
     function correctGridLineOptions(glOpts) {
@@ -3041,16 +3211,16 @@ function addChartDefinition(target, type, data, opt) {
     // `type` exists in CHART_TYPE
     // Array.isArray(data)
     /*
-        if ( Array.isArray(rel.data) && rel.data.length > 0 && typeof rel.data[0] === 'object'
-            && rel.data[0].labels && Array.isArray(rel.data[0].labels)
-            && rel.data[0].values && Array.isArray(rel.data[0].values) ) {
-            obj = rel.data[0];
-        }
-        else {
-            console.warn("USAGE: addChart( 'pie', [ {name:'Sales', labels:['Jan','Feb'], values:[10,20]} ], {x:1, y:1} )");
-            return;
-        }
-        */
+      if ( Array.isArray(rel.data) && rel.data.length > 0 && typeof rel.data[0] === 'object'
+        && rel.data[0].labels && Array.isArray(rel.data[0].labels)
+        && rel.data[0].values && Array.isArray(rel.data[0].values) ) {
+        obj = rel.data[0];
+      }
+      else {
+        console.warn("USAGE: addChart( 'pie', [ {name:'Sales', labels:['Jan','Feb'], values:[10,20]} ], {x:1, y:1} )");
+        return;
+      }
+      */
     // STEP 2: Set default options/decode user options
     // A: Core
     options._type = type;
@@ -3242,12 +3412,19 @@ function addImageDefinition(target, opt) {
     // STEP 3: Set image properties & options
     // FIXME: Measure actual image when no intWidth/intHeight params passed
     // ....: This is an async process: we need to make getSizeFromImage use callback, then set H/W...
-    // if ( !intWidth || !intHeight ) { var imgObj = getSizeFromImage(strImagePath);
+    var imgObj;
+    if (!intWidth || !intHeight) {
+        imgObj = getSizeFromImage(strImagePath);
+    }
+    /*
+    https://www.shutterstock.com/blog/inches-to-pixels-resize-image-quality
+    converting pixels into inches
+     */
     newObject.options = {
         x: intPosX || 0,
         y: intPosY || 0,
-        w: intWidth || 1,
-        h: intHeight || 1,
+        w: intWidth ? intWidth : (imgObj.width && imgObj.width > 0 ? imgObj.width / 72 : 1),
+        h: intHeight ? intHeight : (imgObj.height && imgObj.height > 0 ? imgObj.height / 72 : 1),
         rounding: typeof opt.rounding === 'boolean' ? opt.rounding : false,
         sizing: sizing,
         placeholder: opt.placeholder,
@@ -3479,8 +3656,8 @@ function addTableDefinition(target, tableRows, options, slideLayout, presLayout,
         // TODO: FUTURE: This is wacky and wont function right (shows .w value when there is none from demo.js?!) 20191219
         /*
         if (opt.w && opt.colW) {
-            console.warn('addTable: please use either `colW` or `w` - not both (table will use `colW` and ignore `w`)')
-            console.log(`${opt.w} ${opt.colW}`)
+          console.warn('addTable: please use either `colW` or `w` - not both (table will use `colW` and ignore `w`)')
+          console.log(`${opt.w} ${opt.colW}`)
         }
         */
     }
@@ -3551,10 +3728,10 @@ function addTableDefinition(target, tableRows, options, slideLayout, presLayout,
     }
     // Case 2: Table margins
     /* FIXME: add `margin` option to slide options
-        else if ( addNewSlide.margin ) {
-            if ( Array.isArray(addNewSlide.margin) ) arrTableMargin = addNewSlide.margin;
-            else if ( !isNaN(Number(addNewSlide.margin)) ) arrTableMargin = [Number(addNewSlide.margin), Number(addNewSlide.margin), Number(addNewSlide.margin), Number(addNewSlide.margin)];
-        }
+      else if ( addNewSlide.margin ) {
+        if ( Array.isArray(addNewSlide.margin) ) arrTableMargin = addNewSlide.margin;
+        else if ( !isNaN(Number(addNewSlide.margin)) ) arrTableMargin = [Number(addNewSlide.margin), Number(addNewSlide.margin), Number(addNewSlide.margin), Number(addNewSlide.margin)];
+      }
     */
     // Calc table width depending upon what data we have - several scenarios exist (including bad data, eg: colW doesnt match col count)
     if (opt.colW) {
@@ -3595,11 +3772,11 @@ function addTableDefinition(target, tableRows, options, slideLayout, presLayout,
         row.forEach(function (cell, idy) {
             // A: Transform cell data if needed
             /* Table rows can be an object or plain text - transform into object when needed
-                // EX:
-                var arrTabRows1 = [
-                    [ { text:'A1\nA2', options:{rowspan:2, fill:'99FFCC'} } ]
-                    ,[ 'B2', 'C2', 'D2', 'E2' ]
-                ]
+              // EX:
+              var arrTabRows1 = [
+                [ { text:'A1\nA2', options:{rowspan:2, fill:'99FFCC'} } ]
+                ,[ 'B2', 'C2', 'D2', 'E2' ]
+              ]
             */
             if (typeof cell === 'number' || typeof cell === 'string') {
                 // Grab table formatting `opts` to use here so text style/format inherits as it should
@@ -5693,140 +5870,6 @@ function createGridLineElement(glOpts) {
     strXml += ' </c:spPr>';
     strXml += '</c:majorGridlines>';
     return strXml;
-}
-
-/**
- * PptxGenJS: Media Methods
- */
-/**
- * Encode Image/Audio/Video into base64
- * @param {ISlideLib | ISlideLayout} layout - slide layout
- * @return {Promise} promise of generating the rels
- */
-function encodeSlideMediaRels(layout) {
-    var fs = typeof require !== 'undefined' && typeof window === 'undefined' ? require('fs') : null; // NodeJS
-    var https = typeof require !== 'undefined' && typeof window === 'undefined' ? require('https') : null; // NodeJS
-    var imageProms = [];
-    // A: Read/Encode each audio/image/video thats not already encoded (eg: base64 provided by user)
-    layout.relsMedia
-        .filter(function (rel) { return rel.type !== 'online' && !rel.data; })
-        .forEach(function (rel) {
-        imageProms.push(new Promise(function (resolve, reject) {
-            if (fs && rel.path.indexOf('http') !== 0) {
-                // DESIGN: Node local-file encoding is syncronous, so we can load all images here, then call export with a callback (if any)
-                try {
-                    var bitmap = fs.readFileSync(rel.path);
-                    rel.data = Buffer.from(bitmap).toString('base64');
-                    resolve('done');
-                }
-                catch (ex) {
-                    rel.data = IMG_BROKEN;
-                    reject('ERROR: Unable to read media: "' + rel.path + '"\n' + ex.toString());
-                }
-            }
-            else if (fs && https && rel.path.indexOf('http') === 0) {
-                https.get(rel.path, function (res) {
-                    var rawData = '';
-                    res.setEncoding('binary'); // IMPORTANT: Only binary encoding works
-                    res.on('data', function (chunk) { return (rawData += chunk); });
-                    res.on('end', function () {
-                        rel.data = Buffer.from(rawData, 'binary').toString('base64');
-                        resolve('done');
-                    });
-                    res.on('error', function (ex) {
-                        rel.data = IMG_BROKEN;
-                        reject("ERROR! Unable to load image: " + rel.path);
-                    });
-                });
-            }
-            else {
-                // A: Declare XHR and onload/onerror handlers
-                // DESIGN: `XMLHttpRequest()` plus `FileReader()` = Ablity to read any file into base64!
-                var xhr_1 = new XMLHttpRequest();
-                xhr_1.onload = function () {
-                    var reader = new FileReader();
-                    reader.onloadend = function () {
-                        rel.data = reader.result;
-                        if (!rel.isSvgPng) {
-                            resolve('done');
-                        }
-                        else {
-                            createSvgPngPreview(rel)
-                                .then(function () {
-                                resolve('done');
-                            })
-                                .catch(function (ex) {
-                                reject(ex);
-                            });
-                        }
-                    };
-                    reader.readAsDataURL(xhr_1.response);
-                };
-                xhr_1.onerror = function (ex) {
-                    rel.data = IMG_BROKEN;
-                    reject("ERROR! Unable to load image: " + rel.path);
-                };
-                // B: Execute request
-                xhr_1.open('GET', rel.path);
-                xhr_1.responseType = 'blob';
-                xhr_1.send();
-            }
-        }));
-    });
-    // B: SVG: base64 data still requires a png to be generated (`isSvgPng` flag this as the preview image, not the SVG itself)
-    layout.relsMedia
-        .filter(function (rel) { return rel.isSvgPng && rel.data; })
-        .forEach(function (rel) {
-        if (fs) {
-            //console.log('Sorry, SVG is not supported in Node (more info: https://github.com/gitbrent/PptxGenJS/issues/401)')
-            rel.data = IMG_BROKEN;
-            imageProms.push(Promise.resolve().then(function () { return 'done'; }));
-        }
-        else {
-            imageProms.push(createSvgPngPreview(rel));
-        }
-    });
-    return imageProms;
-}
-/**
- * Create SVG preview image
- * @param {ISlideRelMedia} rel - slide rel
- * @return {Promise} promise
- */
-function createSvgPngPreview(rel) {
-    return new Promise(function (resolve, reject) {
-        // A: Create
-        var image = new Image();
-        // B: Set onload event
-        image.onload = function () {
-            // First: Check for any errors: This is the best method (try/catch wont work, etc.)
-            if (image.width + image.height === 0) {
-                image.onerror('h/w=0');
-            }
-            var canvas = document.createElement('CANVAS');
-            var ctx = canvas.getContext('2d');
-            canvas.width = image.width;
-            canvas.height = image.height;
-            ctx.drawImage(image, 0, 0);
-            // Users running on local machine will get the following error:
-            // "SecurityError: Failed to execute 'toDataURL' on 'HTMLCanvasElement': Tainted canvases may not be exported."
-            // when the canvas.toDataURL call executes below.
-            try {
-                rel.data = canvas.toDataURL(rel.type);
-                resolve('done');
-            }
-            catch (ex) {
-                image.onerror(ex);
-            }
-            canvas = null;
-        };
-        image.onerror = function (ex) {
-            rel.data = IMG_BROKEN;
-            reject("ERROR! Unable to load image: " + rel.path);
-        };
-        // C: Load image
-        image.src = typeof rel.data === 'string' ? rel.data : IMG_BROKEN;
-    });
 }
 
 /*\
